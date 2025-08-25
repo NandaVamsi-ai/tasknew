@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO = 'https://github.com/NandaVamsi-ai/tasknew.git'
+        APP_NODE_IP = '65.0.178.234'  // Application Node public IP
+        SSH_CRED_ID = 'ansible-ssh'  // SSH credential ID for Ansible access
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git url: "${GIT_REPO}", branch: 'main'
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Install Tomcat via Ansible') {
+            steps {
+                writeFile file: 'install_tomcat.yml', text: '''
+                ---
+                - hosts: app_server
+                  become: true
+                  tasks:
+                    - name: Install Java
+                      yum:
+                        name: java-11-openjdk
+                        state: present
+                    - name: Download Tomcat
+                      get_url:
+                        url: https://downloads.apache.org/tomcat/tomcat-9/v9.0.85/bin/apache-tomcat-9.0.85.tar.gz
+                        dest: /opt/
+                    - name: Extract Tomcat
+                      unarchive:
+                        src: /opt/apache-tomcat-9.0.85.tar.gz
+                        dest: /opt/
+                        remote_src: yes
+                    - name: Start Tomcat
+                      shell: nohup /opt/tomcat/bin/startup.sh &
+                '''
+                writeFile file: 'inventory.ini', text: "[app_server]\n${APP_NODE_IP}"
+
+                ansiblePlaybook credentialsId: "${SSH_CRED_ID}", inventory: 'inventory.ini', playbook: 'install_tomcat.yml'
+            }
+        }
+
+        stage('Deploy WAR to Tomcat') {
+            steps {
+                sh '''
+                  WAR_FILE=$(ls target/*.war | head -n1)
+                  scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no $WAR_FILE ${APP_NODE_IP}:/opt/tomcat/webapps/
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment Successful!'
+        }
+        failure {
+            echo 'Deployment Failed.'
+        }
+    }
+}
